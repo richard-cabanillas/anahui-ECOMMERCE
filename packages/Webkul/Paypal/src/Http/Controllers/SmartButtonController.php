@@ -57,102 +57,162 @@ class SmartButtonController extends Controller
      * @return array
      */
     protected function buildRequestBody()
-    {
-        $cart = Cart::getCart();
+{
+    $cart = Cart::getCart();
 
-        $billingAddressLines = $this->getAddressLines($cart->billing_address->address);
+    // ============================================================
+    // 1) Conversión PEN → USD
+    // ============================================================
 
-        $data = [
-            'intent' => 'CAPTURE',
+    // Tasa fija (puedes reemplazar con una automática luego)
+    $exchangeRate = 3.80;
 
-            'payer'  => [
-                'name' => [
-                    'given_name' => $cart->billing_address->first_name,
-                    'surname'    => $cart->billing_address->last_name,
-                ],
+    // Si la moneda del carrito es PEN, convertimos a USD
+    if ($cart->cart_currency_code === 'PEN') {
 
-                'address' => [
-                    'address_line_1' => current($billingAddressLines),
-                    'address_line_2' => last($billingAddressLines),
-                    'admin_area_2'   => $cart->billing_address->city,
-                    'admin_area_1'   => $cart->billing_address->state,
-                    'postal_code'    => $cart->billing_address->postcode,
-                    'country_code'   => $cart->billing_address->country,
-                ],
+        $currency = 'USD';
 
-                'email_address' => $cart->billing_address->email,
+        $subTotalUSD   = $cart->sub_total / $exchangeRate;
+        $taxUSD        = $cart->tax_total / $exchangeRate;
+        $shippingUSD   = ($cart->selected_shipping_rate ? $cart->selected_shipping_rate->price : 0) / $exchangeRate;
+        $discountUSD   = $cart->discount_amount / $exchangeRate;
+
+        $totalUSD      = $subTotalUSD + $taxUSD + $shippingUSD - $discountUSD;
+
+    } else {
+
+        // Si ya está en USD no convertimos nada
+        $currency      = $cart->cart_currency_code;
+
+        $subTotalUSD   = $cart->sub_total;
+        $taxUSD        = $cart->tax_total;
+        $shippingUSD   = $cart->selected_shipping_rate ? $cart->selected_shipping_rate->price : 0;
+        $discountUSD   = $cart->discount_amount;
+        $totalUSD      = $subTotalUSD + $taxUSD + $shippingUSD - $discountUSD;
+    }
+
+    // ============================================================
+    // 2) Dirección del cliente
+    // ============================================================
+
+    $billingAddressLines = $this->getAddressLines($cart->billing_address->address);
+
+    // ============================================================
+    // 3) Construcción del JSON final para PayPal
+    // ============================================================
+
+    $data = [
+        'intent' => 'CAPTURE',
+
+        'payer'  => [
+            'name' => [
+                'given_name' => $cart->billing_address->first_name,
+                'surname'    => $cart->billing_address->last_name,
             ],
-
-            'application_context' => [
-                'shipping_preference' => 'NO_SHIPPING',
+            'address' => [
+                'address_line_1' => current($billingAddressLines),
+                'address_line_2' => last($billingAddressLines),
+                'admin_area_2'   => $cart->billing_address->city,
+                'admin_area_1'   => $cart->billing_address->state,
+                'postal_code'    => $cart->billing_address->postcode,
+                'country_code'   => $cart->billing_address->country,
             ],
+            'email_address' => $cart->billing_address->email,
+        ],
 
-            'purchase_units' => [
-                [
-                    'amount'   => [
-                        'value'         => $this->smartButton->formatCurrencyValue((float) $cart->sub_total + $cart->tax_total + ($cart->selected_shipping_rate ? $cart->selected_shipping_rate->price : 0) - $cart->discount_amount),
-                        'currency_code' => $cart->cart_currency_code,
+        'application_context' => [
+            'shipping_preference' => 'NO_SHIPPING',
+        ],
 
-                        'breakdown'     => [
-                            'item_total' => [
-                                'currency_code' => $cart->cart_currency_code,
-                                'value'         => $this->smartButton->formatCurrencyValue((float) $cart->sub_total),
-                            ],
+        'purchase_units' => [
+            [
+                'amount'   => [
+                    'value'         => $this->smartButton->formatCurrencyValue($totalUSD),
+                    'currency_code' => $currency,
 
-                            'shipping'   => [
-                                'currency_code' => $cart->cart_currency_code,
-                                'value'         => $this->smartButton->formatCurrencyValue((float) ($cart->selected_shipping_rate ? $cart->selected_shipping_rate->price : 0)),
-                            ],
-
-                            'tax_total'  => [
-                                'currency_code' => $cart->cart_currency_code,
-                                'value'         => $this->smartButton->formatCurrencyValue((float) $cart->tax_total),
-                            ],
-
-                            'discount'   => [
-                                'currency_code' => $cart->cart_currency_code,
-                                'value'         => $this->smartButton->formatCurrencyValue((float) $cart->discount_amount),
-                            ],
+                    'breakdown'     => [
+                        'item_total' => [
+                            'currency_code' => $currency,
+                            'value'         => $this->smartButton->formatCurrencyValue($subTotalUSD),
+                        ],
+                        'shipping' => [
+                            'currency_code' => $currency,
+                            'value'         => $this->smartButton->formatCurrencyValue($shippingUSD),
+                        ],
+                        'tax_total' => [
+                            'currency_code' => $currency,
+                            'value'         => $this->smartButton->formatCurrencyValue($taxUSD),
+                        ],
+                        'discount' => [
+                            'currency_code' => $currency,
+                            'value'         => $this->smartButton->formatCurrencyValue($discountUSD),
                         ],
                     ],
-
-                    'items'    => $this->getLineItems($cart),
                 ],
+
+                // Convertir cada item a USD
+                'items'    => $this->getLineItemsUSD($cart, $exchangeRate),
+            ],
+        ],
+    ];
+
+    // ============================================================
+    // 4) Teléfono si existe
+    // ============================================================
+
+    if (! empty($cart->billing_address->phone)) {
+        $data['payer']['phone'] = [
+            'phone_type'   => 'MOBILE',
+            'phone_number' => [
+                'national_number' => $this->smartButton->formatPhone($cart->billing_address->phone),
             ],
         ];
-
-        if (! empty($cart->billing_address->phone)) {
-            $data['payer']['phone'] = [
-                'phone_type'   => 'MOBILE',
-
-                'phone_number' => [
-                    'national_number' => $this->smartButton->formatPhone($cart->billing_address->phone),
-                ],
-            ];
-        }
-
-        if (
-            $cart->haveStockableItems()
-            && $cart->shipping_address
-        ) {
-            $data['application_context']['shipping_preference'] = 'SET_PROVIDED_ADDRESS';
-
-            $data['purchase_units'][0] = array_merge($data['purchase_units'][0], [
-                'shipping' => [
-                    'address' => [
-                        'address_line_1' => current($billingAddressLines),
-                        'address_line_2' => last($billingAddressLines),
-                        'admin_area_2'   => $cart->shipping_address->city,
-                        'admin_area_1'   => $cart->shipping_address->state,
-                        'postal_code'    => $cart->shipping_address->postcode,
-                        'country_code'   => $cart->shipping_address->country,
-                    ],
-                ],
-            ]);
-        }
-
-        return $data;
     }
+
+    // ============================================================
+    // 5) Shipping si el item es stockable
+    // ============================================================
+
+    if ($cart->haveStockableItems() && $cart->shipping_address) {
+        $data['application_context']['shipping_preference'] = 'SET_PROVIDED_ADDRESS';
+
+        $data['purchase_units'][0]['shipping'] = [
+            'address' => [
+                'address_line_1' => current($billingAddressLines),
+                'address_line_2' => last($billingAddressLines),
+                'admin_area_2'   => $cart->shipping_address->city,
+                'admin_area_1'   => $cart->shipping_address->state,
+                'postal_code'    => $cart->shipping_address->postcode,
+                'country_code'   => $cart->shipping_address->country,
+            ],
+        ];
+    }
+
+    return $data;
+}
+
+protected function getLineItemsUSD($cart, $exchangeRate)
+{
+    $lineItems = [];
+
+    foreach ($cart->items as $item) {
+
+        $priceUSD = $item->price / $exchangeRate;
+
+        $lineItems[] = [
+            'unit_amount' => [
+                'currency_code' => 'USD',
+                'value'         => $this->smartButton->formatCurrencyValue($priceUSD),
+            ],
+            'quantity'    => $item->quantity,
+            'name'        => $item->name,
+            'sku'         => $item->sku,
+            'category'    => $item->getTypeInstance()->isStockable() ? 'PHYSICAL_GOODS' : 'DIGITAL_GOODS',
+        ];
+    }
+
+    return $lineItems;
+}
 
     /**
      * Return cart items.

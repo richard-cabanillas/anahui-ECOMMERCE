@@ -60,7 +60,7 @@ return [
             'page-title'                  => 'Convertirse en Usuario',
             'password'                    => 'Contraseña',
             'sign-in-button'              => 'Iniciar Sesión',
-            'subscribe-to-newsletter'     => 'Suscribirse al boletín',
+            'subscribe-to-newsletter'     => 'Recibir noticias y ofertas especiales',
             'success'                     => 'Cuenta creada con éxito.',
             'success-verify'              => 'Cuenta creada con éxito, se ha enviado un correo electrónico para su verificación.',
             'success-verify-email-unsent' => 'Cuenta creada con éxito, pero el correo de verificación no se envió.',
